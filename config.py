@@ -33,7 +33,7 @@ RSI_LOW, RSI_HIGH = 45, 60
 PULLBACK_LOW, PULLBACK_HIGH = 0.03, 0.10   # 3%-10% off the 20-day high
 
 # ---- Position sizing ----
-EQUITY = 10_00_000
+EQUITY = 1_000
 RISK_PER_TRADE_PCT = 0.005            # 0.5% of equity per trade
 ATR_PERIOD = 14
 ATR_STOP_MULT = 2.5
