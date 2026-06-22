@@ -96,3 +96,24 @@ LIQUIDITY_BUFFER_MAX_UTILIZATION_PCT = 0.50   # never redeem more than 50% of cu
 # the next trading day. Sizing math below uses this so it doesn't assume
 # cash that isn't actually available yet.
 SAME_DAY_SELL_PROCEEDS_USABLE_PCT = 0.80
+
+# ---- Conviction-scaled sizing (Dionysian sizing inside an Apollonian cage) ----
+# Lets risk-per-trade scale UP for standout monthly momentum scores and DOWN
+# for marginal ones, instead of every name in the top 20 getting identical
+# risk regardless of how dominant its signal is.
+#
+# Hard rule this must never violate: the multiplier only scales the
+# RISK-DERIVED component of sizing (risk_engine.size_position's risk_amount).
+# It is applied BEFORE, and is always subordinate to, the unchanged
+# MAX_CAPITAL_PCT_PER_STOCK cap, MAX_ADV_PARTICIPATION liquidity cap, and the
+# kill switch - none of which scale with conviction, ever. Conviction can
+# only move within the cage, never widen it.
+#
+# Also deliberately NOT derived from the account's own equity curve or win
+# streak - it's a z-score against THIS month's own selected leaders'
+# distribution, so it reflects how strong this month's signal dispersion is,
+# not whether the account has been on a hot streak (sizing up after winning
+# is leverage dressed as conviction - a known way books blow up).
+CONVICTION_SCALING_ENABLED = True
+CONVICTION_MIN_MULT = 0.5
+CONVICTION_MAX_MULT = 2.0

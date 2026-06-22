@@ -35,7 +35,7 @@ from liquidity_buffer import redeem_for_shortfall
 def is_first_trading_day_of_month():
     # Crude check - good enough for a monthly cron job. Swap in an actual
     # NSE trading-calendar lookup if a holiday ever lands on day 1-3.
-    return dt.date.today().day <= 25#3
+    return dt.date.today().day <= 3
 
 
 def run():
@@ -149,8 +149,9 @@ def run():
 
         stop_price, atr_val = atr_stop(hist)
         entry_price = details["price"]
-        qty = size_position(entry_price, stop_price, equity, fetcher, symbol)
-        qty = apply_kill_switch_to_size(qty, action)
+        conviction_mult = row.get("conviction_mult", 1.0)  # bounded 0.5-2.0, see screener.py
+        qty = size_position(entry_price, stop_price, equity, fetcher, symbol, conviction_mult)
+        qty = apply_kill_switch_to_size(qty, action)  # Apollo has final say, always - conviction never bypasses this
         if qty <= 0:
             continue
 

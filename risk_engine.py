@@ -54,7 +54,7 @@ def kill_switch_action(current_equity):
     return (triggered[-1] if triggered else None), dd
 
 
-def size_position(entry_price, stop_price, equity, fetcher, symbol):
+def size_position(entry_price, stop_price, equity, fetcher, symbol, conviction_mult=1.0):
     """
     Risk-based size, capped by:
       - max capital per stock (config.MAX_CAPITAL_PCT_PER_STOCK)
@@ -62,8 +62,16 @@ def size_position(entry_price, stop_price, equity, fetcher, symbol):
         this is the slippage control; risk-based sizing alone can size you
         into 2-3 days of a thin stock's volume, which is how "the model
         was right but the fill killed it" happens)
+
+    conviction_mult (bounded 0.5-2.0 in config) scales ONLY risk_amount -
+    the numerator that drives qty_risk. qty_capital_cap and
+    qty_liquidity_cap are computed exactly as before and untouched by it.
+    Because the final size is min(qty_risk, qty_capital_cap,
+    qty_liquidity_cap), high conviction can push a trade UP TO those
+    existing ceilings but can never exceed them - the caps stay the final
+    word regardless of how strong the signal looked.
     """
-    risk_amount = equity * config.RISK_PER_TRADE_PCT
+    risk_amount = equity * config.RISK_PER_TRADE_PCT * conviction_mult
     stop_distance = entry_price - stop_price
     if stop_distance <= 0:
         return 0

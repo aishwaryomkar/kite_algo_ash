@@ -39,4 +39,32 @@ def rank_universe(fetcher, universe):
 
 def top_n(df, n=None):
     n = n or config.TOP_N_RANK
-    return df.head(n)
+    selected = df.head(n).copy()
+    return add_conviction(selected)
+
+
+def add_conviction(df):
+    """
+    Z-scores each selected leader's momentum score against the OTHER
+    selected leaders this month - not against the full universe, and never
+    against the account's own equity curve. This answers "is this name's
+    signal unusually dominant even among this month's already-strong
+    field," which is the Dionysian read: differentiate within the winners
+    rather than treating all 20 as equally convicted.
+
+    Output is a bounded multiplier (config.CONVICTION_MIN_MULT to
+    CONVICTION_MAX_MULT) meant to scale ONLY the risk-derived component of
+    sizing in risk_engine.size_position - it must never be used to bypass
+    the separate, fixed capital/liquidity caps or the kill switch.
+    """
+    if not config.CONVICTION_SCALING_ENABLED or df.empty or len(df) < 2:
+        df["conviction_mult"] = 1.0
+        return df
+    mean, std = df["score"].mean(), df["score"].std()
+    if not std or pd.isna(std):
+        df["conviction_mult"] = 1.0
+        return df
+    z = (df["score"] - mean) / std
+    raw_mult = 1 + 0.5 * z  # each 1 std-dev above peer mean -> +50% risk budget
+    df["conviction_mult"] = raw_mult.clip(config.CONVICTION_MIN_MULT, config.CONVICTION_MAX_MULT)
+    return df
