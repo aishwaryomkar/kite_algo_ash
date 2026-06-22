@@ -15,7 +15,7 @@ import datetime as dt
 import config
 from kite_auth import get_kite
 from data_fetcher import DataFetcher
-from universe import build_universe
+from universe import build_universe, load_excluded_holdings
 from regime_filter import regime_state
 from screener import rank_universe, top_n
 from entry_filter import passes_entry_filter
@@ -29,6 +29,7 @@ from portfolio import (
 )
 from order_engine import place_buy, place_sell, place_stop_loss
 from exit_engine import evaluate_exit
+from liquidity_buffer import redeem_for_shortfall
 
 
 def is_first_trading_day_of_month():
@@ -48,7 +49,11 @@ def run():
     print(f"Regime: {regime}")
 
     margins = kite.margins("equity")
-    cash = margins["net"]
+    # Use available.cash specifically, not "net" - net can include collateral
+    # from pledged holdings, which is NOT usable for CNC (delivery) buys.
+    # Sizing/equity tracking against "net" would silently overstate what
+    # this system can actually deploy.
+    cash = margins["available"]["cash"]
     ltp_map = fetcher.ltp(list(positions.keys()))
     equity = total_equity_estimate(positions, ltp_map, cash)
     update_equity_peak(equity)
@@ -122,9 +127,15 @@ def run():
 
     positions = load_positions()
     candidates = top_n(rank_df)
+    excluded = load_excluded_holdings()  # belt-and-suspenders: re-check even though
+                                          # build_universe() already filtered these out
+    running_cash = cash           # decremented as buys are placed this run
+    liquidcase_redeemed_today = 0  # tracked against the per-run cap in liquidity_buffer.py
 
     for _, row in candidates.iterrows():
         symbol = row["symbol"]
+        if symbol.strip().upper() in excluded:
+            continue
         if symbol in positions or is_in_cooldown(symbol):
             continue
         ok, _ = can_add_position(symbol, positions, sector_map)
@@ -143,9 +154,25 @@ def run():
         if qty <= 0:
             continue
 
+        # Cash check + liquidity-buffer top-up: the sizing above caps by
+        # risk/capital%/liquidity, but doesn't know actual cash on hand.
+        # If the sized trade costs more than what's available, try topping
+        # up from the buffer (capped) before shrinking the order.
+        cost = qty * entry_price
+        if cost > running_cash:
+            shortfall = cost - running_cash
+            usable, sale_value = redeem_for_shortfall(kite, place_sell, shortfall, liquidcase_redeemed_today)
+            liquidcase_redeemed_today += sale_value  # cap tracks actual units sold, not the smaller same-day-usable amount
+            running_cash += usable
+            if cost > running_cash:
+                qty = int(running_cash / entry_price)
+        if qty <= 0:
+            continue
+
         place_buy(kite, symbol, qty, entry_price)
         place_stop_loss(kite, symbol, qty, stop_price)
         add_position(symbol, qty, entry_price, stop_price, atr_val, sector_map.get(symbol, "UNKNOWN"))
+        running_cash -= qty * entry_price
         positions = load_positions()
         print(f"ENTRY {symbol}: qty={qty} entry~{entry_price:.1f} stop={stop_price:.1f}")
 
