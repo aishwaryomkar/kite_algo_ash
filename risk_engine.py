@@ -17,7 +17,7 @@ def _load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
             return json.load(f)
-    return {"equity_peak": config.EQUITY, "cooldowns": {}}
+    return None  # signals "no state yet" - caller must seed from real equity
 
 
 def _save_state(state):
@@ -26,7 +26,14 @@ def _save_state(state):
 
 
 def update_equity_peak(current_equity):
-    state = _load_state()
+    """
+    Called once per run with the REAL, live-computed equity (cash + holdings
+    value). On the very first run ever, this is what seeds equity_peak - not
+    config.EQUITY, which is just a sizing fallback and may not match actual
+    capital deployed. Seeding from a static config constant instead of real
+    equity is exactly how a small/growing account gets a phantom drawdown.
+    """
+    state = _load_state() or {"equity_peak": current_equity, "cooldowns": {}}
     state["equity_peak"] = max(state["equity_peak"], current_equity)
     _save_state(state)
     return state["equity_peak"]
@@ -34,6 +41,8 @@ def update_equity_peak(current_equity):
 
 def current_drawdown(current_equity):
     state = _load_state()
+    if state is None:
+        return 0.0  # no history yet - can't be in drawdown on the first observation
     peak = max(state["equity_peak"], current_equity)
     return (peak - current_equity) / peak if peak > 0 else 0.0
 
@@ -86,6 +95,8 @@ def apply_kill_switch_to_size(qty, action):
 
 def is_in_cooldown(symbol):
     state = _load_state()
+    if state is None:
+        return False
     until = state["cooldowns"].get(symbol)
     if not until:
         return False
@@ -93,7 +104,7 @@ def is_in_cooldown(symbol):
 
 
 def start_cooldown(symbol):
-    state = _load_state()
+    state = _load_state() or {"equity_peak": config.EQUITY, "cooldowns": {}}
     until = dt.date.today() + dt.timedelta(days=config.REENTRY_COOLDOWN_DAYS)
     state["cooldowns"][symbol] = until.isoformat()
     _save_state(state)
