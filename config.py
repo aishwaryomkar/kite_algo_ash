@@ -28,6 +28,21 @@ REGIME_SLOPE_LOOKBACK = 10            # days over which 200DMA slope is measured
 BREADTH_CONFIRM = True                # ENHANCEMENT: secondary breadth filter, see regime_filter.py
 BREADTH_MIN_PCT_ABOVE_200DMA = 0.40   # >=40% of universe above own 200DMA to confirm "bullish"
 
+# ---- Graduated regime enforcement ----
+# Below this trading_equity, drop the breadth confirmation requirement
+# (still requires the Nifty index trend check, unless fully bypassed
+# below) - the absolute rupee cost of a soft-market entry is small while
+# capital is small, and months of zero buys waiting for breadth to confirm
+# has its own real cost early on. Above this threshold, both checks are
+# enforced exactly as originally designed - no exceptions.
+REGIME_SOFTEN_BELOW_EQUITY = 50_000
+# Set True to drop the regime filter ENTIRELY below the threshold above,
+# rather than softening it. NOT the default - this also removes the Nifty
+# trend check, i.e. the single rule most responsible for avoiding the
+# worst drawdowns, regardless of how small the capital at stake is right
+# now. Softening (the default) keeps that check; this does not.
+REGIME_FULLY_BYPASS_BELOW_EQUITY = False
+
 # ---- Monthly ranking ----
 MOM_WEIGHTS = {"12m": 0.50, "6m": 0.30, "3m": 0.20}
 TOP_N_RANK = 20
@@ -96,14 +111,6 @@ LIQUIDITY_BUFFER_MAX_UTILIZATION_PCT = 0.50   # never redeem more than 50% of cu
 # the next trading day. Sizing math below uses this so it doesn't assume
 # cash that isn't actually available yet.
 SAME_DAY_SELL_PROCEEDS_USABLE_PCT = 0.80
-
-# How much of the buffer's value counts toward the EQUITY BASE used for
-# position sizing (risk_amount, capital-per-stock cap) - deliberately set
-# equal to LIQUIDITY_BUFFER_MAX_UTILIZATION_PCT, not a separate number.
-# Sizing should never assume more capital is "available" than the
-# redemption cap actually allows to be raised - if these drifted apart,
-# sizing could promise a position the buffer can't actually fund.
-LIQUIDCASE_SIZING_INCLUSION_PCT = LIQUIDITY_BUFFER_MAX_UTILIZATION_PCT
 
 # ---- Conviction-scaled sizing (Dionysian sizing inside an Apollonian cage) ----
 # Lets risk-per-trade scale UP for standout monthly momentum scores and DOWN
