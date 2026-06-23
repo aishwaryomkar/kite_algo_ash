@@ -43,13 +43,30 @@ def breadth_bullish(fetcher, universe):
     return (above / total) >= config.BREADTH_MIN_PCT_ABOVE_200DMA
 
 
-def regime_state(fetcher, universe):
+def regime_state(fetcher, universe, equity=None):
     idx_ok = index_regime_bullish(fetcher)
-    breadth_ok = breadth_bullish(fetcher, universe)
-    bullish = idx_ok and breadth_ok
+
+    graduated = equity is not None and equity < config.REGIME_SOFTEN_BELOW_EQUITY
+
+    if graduated and config.REGIME_FULLY_BYPASS_BELOW_EQUITY:
+        # Full bypass - intentionally NOT the default. idx_ok is still
+        # computed and reported above for visibility even though it
+        # doesn't gate anything in this mode.
+        bullish = True
+        breadth_ok = None
+    elif graduated:
+        # Softened: breadth confirmation dropped, but the core trend check
+        # still has to pass.
+        breadth_ok = None
+        bullish = idx_ok
+    else:
+        breadth_ok = breadth_bullish(fetcher, universe)
+        bullish = idx_ok and breadth_ok
+
     return {
         "bullish": bullish,
         "index_ok": idx_ok,
         "breadth_ok": breadth_ok,
         "cash_target_pct": 0.0 if bullish else 0.90,
+        "graduated_mode": graduated,
     }

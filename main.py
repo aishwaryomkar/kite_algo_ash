@@ -35,7 +35,7 @@ from liquidity_buffer import redeem_for_shortfall, get_buffer_holding
 def is_first_trading_day_of_month():
     # Crude check - good enough for a monthly cron job. Swap in an actual
     # NSE trading-calendar lookup if a holiday ever lands on day 1-3.
-    return dt.date.today().day <= 30
+    return dt.date.today().day <= 3
 
 
 def run():
@@ -43,10 +43,6 @@ def run():
     fetcher = DataFetcher(kite)
     sector_map = load_sector_map()
     positions = load_positions()
-
-    universe = build_universe(fetcher)
-    regime = regime_state(fetcher, universe)
-    print(f"Regime: {regime}")
 
     margins = kite.margins("equity")
     # Use available.cash specifically, not "net" - net can include collateral
@@ -59,9 +55,10 @@ def run():
     # TWO different numbers, used for two different purposes - do not merge
     # them:
     #   trading_equity - real cash + this algo's own positions only. This is
-    #     what the kill switch / drawdown tracking uses. Never diluted by
-    #     the LIQUIDCASE buffer, so a real trading loss always shows up as
-    #     a real % drawdown, not softened by a stable side-pool.
+    #     what the kill switch / drawdown tracking AND the regime-softening
+    #     threshold below use. Never diluted by the LIQUIDCASE buffer, so a
+    #     real trading loss always shows up as a real % drawdown, not
+    #     softened by a stable side-pool.
     #   sizing_equity - trading_equity PLUS a capped fraction of the
     #     LIQUIDCASE buffer's value. This wider number is what position
     #     sizing (risk_amount, capital-per-stock cap) is computed against,
@@ -86,12 +83,23 @@ def run():
         )
         return
 
+    universe = build_universe(fetcher)
+    # Graduated regime enforcement: while trading_equity is small, the full
+    # breadth-confirmed gate means real stretches of zero buys, at a time
+    # when the absolute rupee cost of "buying into a soft market" is also
+    # small. Below the threshold this drops the breadth requirement (still
+    # requires the Nifty trend check, unless fully bypassed below); above
+    # it, both checks are enforced exactly as originally designed.
+    regime = regime_state(fetcher, universe, equity=trading_equity)
+    print(f"Regime: {regime}")
+
     update_equity_peak(trading_equity)
     action, dd = kill_switch_action(trading_equity)
     print(
         f"Trading equity: {trading_equity:.0f}  Sizing equity: {sizing_equity:.0f}  "
         f"Drawdown: {dd:.2%}  Kill switch: {action}"
     )
+
 
     rebalance_day = is_first_trading_day_of_month()
     rank_df = rank_universe(fetcher, universe) if rebalance_day else None
