@@ -16,6 +16,7 @@ Design constraints, deliberately strict:
     accounts for that rather than assuming the full sale value is spendable
     immediately.
 """
+import math
 import config
 
 
@@ -37,10 +38,21 @@ def max_redeemable_value(kite):
 
 def redeem_for_shortfall(kite, place_sell_fn, shortfall_amount, already_redeemed_today):
     """
-    Sells just enough buffer units to cover `shortfall_amount`, capped by
-    the per-run redemption ceiling minus whatever's already been redeemed
-    this run. Returns (cash_immediately_usable, sale_value) - use the first
-    number for sizing, since only ~80% of the sale is usable same-day.
+    Sells enough buffer units to cover `shortfall_amount` AFTER the same-day
+    haircut - not before it. Two things this corrects relative to a naive
+    version:
+      1. Targets the GROSS sale value needed so the NET usable amount (after
+         SAME_DAY_SELL_PROCEEDS_USABLE_PCT) actually covers the shortfall,
+         where the cap allows - not the shortfall itself as the gross
+         target, which would always fall ~20% short by construction.
+      2. Rounds the unit quantity UP (ceiling), not down - flooring can sell
+         zero units when the shortfall is smaller than one unit's price,
+         silently failing a trade that a single extra unit would have
+         covered. The deliberate tradeoff: this can push the actual sale
+         value up to one unit's price past the nominal cap - bounded and
+         intentional, since failing the trade entirely is the worse outcome.
+
+    Returns (cash_immediately_usable, sale_value).
     """
     qty_held, price, value = get_buffer_holding(kite)
     if qty_held <= 0 or price <= 0:
@@ -50,8 +62,12 @@ def redeem_for_shortfall(kite, place_sell_fn, shortfall_amount, already_redeemed
     if remaining_cap <= 0:
         return 0, 0
 
-    sale_target = min(shortfall_amount, remaining_cap, value)
-    qty_to_sell = int(sale_target / price)
+    gross_needed = shortfall_amount / config.SAME_DAY_SELL_PROCEEDS_USABLE_PCT
+    sale_target = min(gross_needed, remaining_cap, value)
+    if sale_target <= 0:
+        return 0, 0
+
+    qty_to_sell = min(math.ceil(sale_target / price), qty_held)
     if qty_to_sell <= 0:
         return 0, 0
 
