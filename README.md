@@ -87,3 +87,11 @@ new entries.
 - **Graduated kill switch** — added a 5% "reduce size 25%" soft-pause
   step before the original 8% level, so de-risking is a ramp, not a cliff.
 
+## A note on government-service constraints
+
+This is cash-delivery only — no F&O, no intraday — so it sits outside the
+clearest restriction. Worth a quick check before going live on whether
+*automated/systematic* personal trading via API specifically (frequency,
+disclosure, conduct-rule treatment of a "trading system" vs. discretionary
+investing) needs separate clearance, since that's a different question
+from whether the trades themselves are permitted.
