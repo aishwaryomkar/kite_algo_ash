@@ -97,6 +97,14 @@ LIQUIDITY_BUFFER_MAX_UTILIZATION_PCT = 0.50   # never redeem more than 50% of cu
 # cash that isn't actually available yet.
 SAME_DAY_SELL_PROCEEDS_USABLE_PCT = 0.80
 
+# How much of the buffer's value counts toward the EQUITY BASE used for
+# position sizing (risk_amount, capital-per-stock cap) - deliberately set
+# equal to LIQUIDITY_BUFFER_MAX_UTILIZATION_PCT, not a separate number.
+# Sizing should never assume more capital is "available" than the
+# redemption cap actually allows to be raised - if these drifted apart,
+# sizing could promise a position the buffer can't actually fund.
+LIQUIDCASE_SIZING_INCLUSION_PCT = LIQUIDITY_BUFFER_MAX_UTILIZATION_PCT
+
 # ---- Conviction-scaled sizing (Dionysian sizing inside an Apollonian cage) ----
 # Lets risk-per-trade scale UP for standout monthly momentum scores and DOWN
 # for marginal ones, instead of every name in the top 20 getting identical
@@ -117,3 +125,17 @@ SAME_DAY_SELL_PROCEEDS_USABLE_PCT = 0.80
 CONVICTION_SCALING_ENABLED = True
 CONVICTION_MIN_MULT = 0.5
 CONVICTION_MAX_MULT = 2.0
+
+# What fraction of the LIQUIDCASE buffer's CURRENT VALUE counts toward the
+# equity base used for position SIZING (risk_amount, capital-per-stock cap)
+# only. Deliberately separate from LIQUIDITY_BUFFER_MAX_UTILIZATION_PCT
+# (which caps actual redemption) and kept LOWER than it (30% vs 50%) - you
+# size as if some of the cushion is capital, but the ceiling on what can
+# actually ever be redeemed stays more conservative than what sizing assumes.
+#
+# Critically, this does NOT touch the kill switch / drawdown tracking, which
+# stays anchored to real trading capital only (cash + this algo's own
+# positions). Diluting the drawdown denominator with a stable side-pool
+# would make real trading losses look smaller as a % of "equity" - that's
+# loosening the part of the system that isn't supposed to flex.
+LIQUIDCASE_SIZING_INCLUSION_PCT = 0.30

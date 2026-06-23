@@ -29,13 +29,13 @@ from portfolio import (
 )
 from order_engine import place_buy, place_sell, place_stop_loss
 from exit_engine import evaluate_exit
-from liquidity_buffer import redeem_for_shortfall
+from liquidity_buffer import redeem_for_shortfall, get_buffer_holding
 
 
 def is_first_trading_day_of_month():
     # Crude check - good enough for a monthly cron job. Swap in an actual
     # NSE trading-calendar lookup if a holiday ever lands on day 1-3.
-    return dt.date.today().day <= 30
+    return dt.date.today().day <= 3
 
 
 def run():
@@ -55,10 +55,43 @@ def run():
     # this system can actually deploy.
     cash = margins["available"]["cash"]
     ltp_map = fetcher.ltp(list(positions.keys()))
-    equity = total_equity_estimate(positions, ltp_map, cash)
-    update_equity_peak(equity)
-    action, dd = kill_switch_action(equity)
-    print(f"Equity: {equity:.0f}  Drawdown: {dd:.2%}  Kill switch: {action}")
+
+    # TWO different numbers, used for two different purposes - do not merge
+    # them:
+    #   trading_equity - real cash + this algo's own positions only. This is
+    #     what the kill switch / drawdown tracking uses. Never diluted by
+    #     the LIQUIDCASE buffer, so a real trading loss always shows up as
+    #     a real % drawdown, not softened by a stable side-pool.
+    #   sizing_equity - trading_equity PLUS a capped fraction of the
+    #     LIQUIDCASE buffer's value. This wider number is what position
+    #     sizing (risk_amount, capital-per-stock cap) is computed against,
+    #     so positions can be sized more usably without that cushion ever
+    #     affecting whether the kill switch thinks you're in a drawdown.
+    trading_equity = total_equity_estimate(positions, ltp_map, cash)
+    _, _, liquidcase_value = get_buffer_holding(kite)
+    sizing_equity = trading_equity + (liquidcase_value * config.LIQUIDCASE_SIZING_INCLUSION_PCT)
+
+    # No open positions AND no cash AND nothing in the buffer is genuinely
+    # zero deployable capital - different from a real drawdown, even though
+    # the math would otherwise read 100%. Most likely either the equity
+    # segment isn't funded yet, or sale proceeds are still settling.
+    if not positions and cash == 0 and liquidcase_value == 0:
+        print(
+            "Equity reads 0 with no open positions and no buffer balance - "
+            "not a drawdown event. Check Console > Funds > Equity > "
+            "Available Cash to confirm whether this segment is funded yet, "
+            "or whether a prior sale's proceeds are still settling (T+1). "
+            "Skipping kill-switch evaluation - nothing to manage with zero "
+            "deployable capital."
+        )
+        return
+
+    update_equity_peak(trading_equity)
+    action, dd = kill_switch_action(trading_equity)
+    print(
+        f"Trading equity: {trading_equity:.0f}  Sizing equity: {sizing_equity:.0f}  "
+        f"Drawdown: {dd:.2%}  Kill switch: {action}"
+    )
 
     rebalance_day = is_first_trading_day_of_month()
     rank_df = rank_universe(fetcher, universe) if rebalance_day else None
@@ -150,7 +183,7 @@ def run():
         stop_price, atr_val = atr_stop(hist)
         entry_price = details["price"]
         conviction_mult = row.get("conviction_mult", 1.0)  # bounded 0.5-2.0, see screener.py
-        qty = size_position(entry_price, stop_price, equity, fetcher, symbol, conviction_mult)
+        qty = size_position(entry_price, stop_price, sizing_equity, fetcher, symbol, conviction_mult)
         qty = apply_kill_switch_to_size(qty, action)  # Apollo has final say, always - conviction never bypasses this
         if qty <= 0:
             continue
