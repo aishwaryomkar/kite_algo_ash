@@ -51,7 +51,7 @@ from monitoring import TradingLogger, TelemetryCollector
 def is_first_trading_day_of_month():
     # Crude check - good enough for a monthly cron job. Swap in an actual
     # NSE trading-calendar lookup if a holiday ever lands on day 1-3.
-    return dt.date.today().day <= 3
+    return dt.date.today().day <= 30
 
 
 def run():
