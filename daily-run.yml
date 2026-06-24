@@ -1,0 +1,49 @@
+name: Daily Trading Run
+
+# Runs on a SELF-HOSTED runner (registered on your static-IP box - EC2 or
+# Oracle Cloud Always Free) - NOT a GitHub-hosted runner. This is required:
+# GitHub-hosted runners get a dynamic, shared IP that changes every run,
+# which both Zerodha and SEBI's algo-trading circular reject for order
+# placement. Self-hosted runner minutes are not metered against any quota
+# either way, so this costs nothing regardless of how often it runs.
+#
+# Setup (one-time, on the static-IP box itself):
+#   1. GitHub repo -> Settings -> Actions -> Runners -> New self-hosted runner
+#   2. Follow the displayed ./config.sh command on the box
+#   3. Run ./svc.sh install && ./svc.sh start   (keeps it registered after reboot)
+#
+# Cron schedule below is in UTC, regardless of the runner's own timezone -
+# GitHub Actions schedules always evaluate in UTC. 9:20am IST = 3:50am UTC.
+on:
+  schedule:
+    - cron: "50 3 * * 1-5"   # 3:50 UTC = 9:20 IST, Mon-Fri
+  workflow_dispatch: {}       # lets you trigger a run manually from the Actions tab
+
+jobs:
+  run-trading-bot:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt --break-system-packages
+
+      - name: Run main.py
+        env:
+          KITE_API_KEY: ${{ secrets.KITE_API_KEY }}
+          KITE_API_SECRET: ${{ secrets.KITE_API_SECRET }}
+          KITE_USER_ID: ${{ secrets.KITE_USER_ID }}
+          KITE_PASSWORD: ${{ secrets.KITE_PASSWORD }}
+          KITE_TOTP_SECRET: ${{ secrets.KITE_TOTP_SECRET }}
+        run: python3 main.py
+
+      - name: Commit updated state files
+        if: always()   # commit logs/telemetry even if the run hit an error partway through
+        run: |
+          git config user.name "trading-bot"
+          git config user.email "trading-bot@users.noreply.github.com"
+          git add positions.json risk_state.json telemetry/ logs/ || true
+          git diff --staged --quiet || git commit -m "Daily run: $(date -u +%Y-%m-%d)"
+          git push || true
