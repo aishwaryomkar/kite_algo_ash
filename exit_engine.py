@@ -1,26 +1,30 @@
 """
 Exit logic, evaluated once per day for every open position, in priority
-order: market filter -> hard stop -> rank decay -> trend break -> time
-stop -> partial profit booking.
+order: SEVERE-tier market filter -> hard stop -> rank decay (tier-aware
+threshold) -> trend break -> time stop -> partial profit booking.
+
+Only the SEVERE tier forces an exit regardless of how the individual stock
+looks - see regime_filter.py for why CAUTION deliberately does not.
 """
 import datetime as dt
 import config
 from indicators import dma
 
 
-def evaluate_exit(symbol, pos, hist, rank_df, regime_bullish):
+def evaluate_exit(symbol, pos, hist, rank_df, regime):
     close = hist["close"]
     last_price = close.iloc[-1]
     sma100 = dma(close, 100).iloc[-1]
 
-    if not regime_bullish:
-        return "FULL_EXIT", "market_filter_bearish"
+    if regime["force_exit_all"]:
+        return "FULL_EXIT", "market_filter_severe"
 
     if last_price <= pos["stop_price"]:
         return "FULL_EXIT", "stop_hit"
 
+    rank_threshold = regime["rank_exit_threshold"]
     rank_row = rank_df[rank_df["symbol"] == symbol] if rank_df is not None and not rank_df.empty else None
-    if rank_row is not None and (rank_row.empty or rank_row.iloc[0]["rank"] > config.RANK_EXIT_THRESHOLD):
+    if rank_row is not None and (rank_row.empty or rank_row.iloc[0]["rank"] > rank_threshold):
         return "FULL_EXIT", "rank_decayed"
 
     if last_price < sma100:

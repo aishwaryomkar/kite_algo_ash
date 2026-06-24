@@ -61,6 +61,45 @@ Every run: refreshes the regime read, manages exits + kill switch on open
 positions. Only on the 1st–3rd of the month does it re-rank and look for
 new entries.
 
+## Monitoring (logging + telemetry + dashboard)
+
+`monitoring.py` is already wired into `main.py` - every run writes:
+- A daily log file under `logs/` (info/warning/error level events)
+- An **appended** row to `telemetry/equity_history.csv` and `telemetry/trades_history.csv`
+
+That word "appended" matters: each cron run adds one new row, not a fresh
+file. A monitoring setup that writes a new timestamped file every run looks
+fine on day one but only ever shows you the latest single day - there's no
+actual curve to look at after a month of runs. This is why it's a DB-style
+append instead.
+
+View it with:
+
+```bash
+pip install streamlit plotly
+streamlit run dashboard.py
+```
+
+The dashboard shows two genuinely different things, kept visually separate:
+- **Live state** - read directly from `positions.json`/`risk_state.json`. What's true right now.
+- **History** - read from the appended telemetry CSVs. How you got here, day by day.
+
+## Testing
+
+```bash
+pip install pytest
+pytest tests/ -v
+```
+
+45 tests across indicators, risk sizing, the kill switch, conviction
+scaling, the 3-tier regime filter, exits, portfolio/sector caps, the
+exclusion list, and the liquidity buffer. A few of these are deliberate
+regression tests for real bugs found and fixed during development - e.g.
+`test_kill_switch_seeds_peak_from_real_equity_not_config_constant` and the
+two liquidity-buffer rounding/haircut bugs in `test_liquidity_buffer.py`.
+If you change `risk_engine.py`, `regime_filter.py`, or `liquidity_buffer.py`,
+run this first.
+
 ## Before running with real capital
 
 1. Run `backtest.py` first — it's a rough sanity check (see its docstring

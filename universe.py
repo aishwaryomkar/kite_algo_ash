@@ -12,19 +12,29 @@ import requests
 import config
 
 NIFTY500_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv"
-LOCAL_CACHE = "nifty500.csv"
+NIFTY50_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv"
+LOCAL_CACHE_500 = "nifty500.csv"
+LOCAL_CACHE_50 = "nifty50.csv"
 
 
 def fetch_nifty500_list():
+    return _fetch_index_list(NIFTY500_URL, LOCAL_CACHE_500)
+
+
+def fetch_nifty50_list():
+    return _fetch_index_list(NIFTY50_URL, LOCAL_CACHE_50)
+
+
+def _fetch_index_list(url, local_cache):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        r = requests.get(NIFTY500_URL, headers=headers, timeout=10)
+        r = requests.get(url, headers=headers, timeout=10)
         r.raise_for_status()
-        with open(LOCAL_CACHE, "wb") as f:
+        with open(local_cache, "wb") as f:
             f.write(r.content)
     except Exception as e:
-        print(f"Live NSE fetch failed ({e}); falling back to local cache '{LOCAL_CACHE}'.")
-    df = pd.read_csv(LOCAL_CACHE)
+        print(f"Live NSE fetch failed ({e}); falling back to local cache '{local_cache}'.")
+    df = pd.read_csv(local_cache)
     return df["Symbol"].tolist()
 
 
@@ -66,6 +76,6 @@ def apply_liquidity_filter(symbols, fetcher):
     return keep
 
 
-def build_universe(fetcher):
-    raw = fetch_nifty500_list()
+def build_universe(fetcher, universe_choice="nifty500"):
+    raw = fetch_nifty50_list() if universe_choice == "nifty50" else fetch_nifty500_list()
     return apply_liquidity_filter(raw, fetcher)

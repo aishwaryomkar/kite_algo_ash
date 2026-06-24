@@ -9,6 +9,17 @@ KITE_API_KEY = os.environ.get("KITE_API_KEY", "")
 KITE_API_SECRET = os.environ.get("KITE_API_SECRET", "")
 KITE_ACCESS_TOKEN_FILE = "access_token.txt"
 
+# ---- Automated login (optional - only needed for unattended/scheduled runs) ----
+# If all three are set, kite_auth.get_kite() uses TOTP-based automated login
+# instead of the interactive paste-a-token flow. SECURITY NOTE: this is your
+# actual account password and 2FA seed, not just API-scoped credentials - a
+# meaningfully bigger blast radius than the API key/secret alone if these
+# secrets were ever exposed. Only set these in a private repo's GitHub
+# Secrets (or equivalent), never committed to the repo itself.
+KITE_USER_ID = os.environ.get("KITE_USER_ID", "")
+KITE_PASSWORD = os.environ.get("KITE_PASSWORD", "")
+KITE_TOTP_SECRET = os.environ.get("KITE_TOTP_SECRET", "")
+
 # ---- Universe filters ----
 MIN_AVG_TURNOVER = 5_00_00_000        # Rs 5 crore, 20-day average
 MIN_PRICE = 100
@@ -26,15 +37,30 @@ REGIME_INDEX = "NIFTYBEES"            # use a tradable proxy with full history v
 REGIME_DMA_PERIOD = 200
 REGIME_SLOPE_LOOKBACK = 10            # days over which 200DMA slope is measured
 BREADTH_CONFIRM = True                # ENHANCEMENT: secondary breadth filter, see regime_filter.py
-BREADTH_MIN_PCT_ABOVE_200DMA = 0.40   # >=40% of universe above own 200DMA to confirm "bullish"
+BREADTH_MIN_PCT_ABOVE_200DMA = 0.40   # >=40% of universe above own 200DMA -> BULLISH tier
+BREADTH_SEVERE_PCT = 0.20             # <20% AND index also broken -> SEVERE tier (the only tier that forces an exit)
 
-# ---- Graduated regime enforcement ----
-# Below this trading_equity, drop the breadth confirmation requirement
-# (still requires the Nifty index trend check, unless fully bypassed
-# below) - the absolute rupee cost of a soft-market entry is small while
-# capital is small, and months of zero buys waiting for breadth to confirm
-# has its own real cost early on. Above this threshold, both checks are
-# enforced exactly as originally designed - no exceptions.
+# ---- Graduated regime enforcement (3 tiers, not 2 binary states) ----
+# BULLISH: index trend ok AND breadth confirms -> normal operation.
+# CAUTION: index and breadth DISAGREE (one ok, one not) - genuinely mixed
+#   signal, not a confirmed breakdown. New entries allowed at reduced size;
+#   existing positions are NOT force-exited - left to stop/rank/100DMA
+#   exits, just with a tighter rank threshold so decaying names roll off
+#   faster without a blanket sale.
+# SEVERE: index AND breadth both agree things are bad - the one case this
+#   filter was actually built for. No new entries, and existing positions
+#   ARE force-exited. This is deliberately the only tier with hard
+#   liquidation - a real, broad-based breakdown is exactly the situation
+#   where a long-only momentum book has no edge and speed matters more
+#   than nuance.
+CAUTION_ENTRY_SIZE_MULT = 0.5
+RANK_EXIT_THRESHOLD_CAUTION = 25      # tighter than RANK_EXIT_THRESHOLD (50) while in CAUTION
+
+# Below this trading_equity, drop the breadth confirmation requirement for
+# the BULLISH/CAUTION boundary (still requires the Nifty index trend check,
+# unless fully bypassed below) - the absolute rupee cost of a soft-market
+# entry is small while capital is small. Above this threshold, the full
+# 3-tier logic is enforced exactly as designed - no exceptions.
 REGIME_SOFTEN_BELOW_EQUITY = 50_000
 # Set True to drop the regime filter ENTIRELY below the threshold above,
 # rather than softening it. NOT the default - this also removes the Nifty

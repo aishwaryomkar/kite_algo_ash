@@ -4,6 +4,21 @@ e.g. 9:20am IST (after the opening auction settles):
 
     20 9 * * 1-5 cd /path/to/kite_algo && /usr/bin/python3 main.py >> run.log 2>&1
 
+IMPORTANT - cron runs on the SERVER's system clock, not IST automatically.
+EC2 instances (Ubuntu, Amazon Linux) default to UTC. Check first:
+
+    date
+
+If that's not already IST, either set the box's timezone (preferred, fixes
+this for every cron job permanently):
+
+    sudo timedatectl set-timezone Asia/Kolkata
+
+...or, if you'd rather leave the server on UTC, convert the schedule
+yourself: 9:20am IST = 3:50am UTC, so the cron line becomes
+`50 3 * * 1-5` instead. Easy to get this backwards without an error message
+- the script just silently runs ~5.5 hours off from when you think it does.
+
 Every trading day this script: refreshes the regime read, manages exits
 and the kill switch on existing positions, and - only on the first
 trading session of the month - re-ranks the universe and looks for new
@@ -30,6 +45,7 @@ from portfolio import (
 from order_engine import place_buy, place_sell, place_stop_loss
 from exit_engine import evaluate_exit
 from liquidity_buffer import redeem_for_shortfall, get_buffer_holding
+from monitoring import TradingLogger, TelemetryCollector
 
 
 def is_first_trading_day_of_month():
@@ -39,6 +55,10 @@ def is_first_trading_day_of_month():
 
 
 def run():
+    logger = TradingLogger()
+    telemetry = TelemetryCollector()
+    logger.info("Run started")
+
     kite = get_kite()
     fetcher = DataFetcher(kite)
     sector_map = load_sector_map()
@@ -73,7 +93,7 @@ def run():
     # the math would otherwise read 100%. Most likely either the equity
     # segment isn't funded yet, or sale proceeds are still settling.
     if not positions and cash == 0 and liquidcase_value == 0:
-        print(
+        msg = (
             "Equity reads 0 with no open positions and no buffer balance - "
             "not a drawdown event. Check Console > Funds > Equity > "
             "Available Cash to confirm whether this segment is funded yet, "
@@ -81,6 +101,8 @@ def run():
             "Skipping kill-switch evaluation - nothing to manage with zero "
             "deployable capital."
         )
+        print(msg)
+        logger.warning(msg)
         return
 
     universe = build_universe(fetcher)
@@ -92,12 +114,21 @@ def run():
     # it, both checks are enforced exactly as originally designed.
     regime = regime_state(fetcher, universe, equity=trading_equity)
     print(f"Regime: {regime}")
+    logger.info(f"Regime tier={regime['tier']} index_ok={regime['index_ok']} breadth_pct={regime['breadth_pct']}")
 
     update_equity_peak(trading_equity)
     action, dd = kill_switch_action(trading_equity)
     print(
         f"Trading equity: {trading_equity:.0f}  Sizing equity: {sizing_equity:.0f}  "
         f"Drawdown: {dd:.2%}  Kill switch: {action}"
+    )
+    if action:
+        logger.warning(f"Kill switch triggered: {action} (drawdown {dd:.2%})")
+
+    telemetry.log_equity(
+        trading_equity=trading_equity, sizing_equity=sizing_equity, cash=cash,
+        drawdown=dd, kill_switch=action, regime_tier=regime["tier"],
+        breadth_pct=regime["breadth_pct"], positions_count=len(positions),
     )
 
 
@@ -113,7 +144,7 @@ def run():
         # for the rank-decay check, so fetch it narrowly rather than
         # re-ranking the whole universe every day
         rank_for_check = rank_df if rank_df is not None else rank_universe(fetcher, [symbol])
-        decision, reason = evaluate_exit(symbol, pos, hist, rank_for_check, regime["bullish"])
+        decision, reason = evaluate_exit(symbol, pos, hist, rank_for_check, regime)
         ltp = ltp_map.get(symbol, hist["close"].iloc[-1])
 
         if decision == "FULL_EXIT":
@@ -121,14 +152,18 @@ def run():
             remove_position(symbol)
             start_cooldown(symbol)
             print(f"EXIT {symbol}: {reason}")
+            logger.info(f"EXIT {symbol} qty={pos['qty']} price={ltp:.1f} reason={reason}")
+            telemetry.log_trade(symbol, "SELL", pos["qty"], ltp, reason)
         elif decision == "PARTIAL_EXIT":
             partial_qty = int(pos["qty"] * config.PARTIAL_BOOK_PCT)
             if partial_qty > 0:
                 place_sell(kite, symbol, partial_qty, ltp)
                 pos["qty"] -= partial_qty
+                telemetry.log_trade(symbol, "SELL", partial_qty, ltp, reason)
             pos["partial_booked"] = True
             positions[symbol] = pos
             print(f"PARTIAL EXIT {symbol}: booked {partial_qty}, {pos['qty']} remaining")
+            logger.info(f"PARTIAL EXIT {symbol} booked={partial_qty} remaining={pos['qty']}")
 
     save_positions(positions)
     positions = load_positions()
@@ -147,18 +182,22 @@ def run():
                 place_sell(kite, symbol, pos["qty"], ltp)
                 remove_position(symbol)
                 print(f"KILL SWITCH (EXIT_WEAKEST_HALF): {symbol}")
+                logger.warning(f"KILL SWITCH EXIT_WEAKEST_HALF: {symbol} qty={pos['qty']}")
+                telemetry.log_trade(symbol, "SELL", pos["qty"], ltp, "kill_switch_exit_weakest_half")
 
     if action == "EXIT_ALL":
         for symbol, pos in list(load_positions().items()):
             ltp = ltp_map.get(symbol, pos["entry_price"])
             place_sell(kite, symbol, pos["qty"], ltp)
             remove_position(symbol)
+            telemetry.log_trade(symbol, "SELL", pos["qty"], ltp, "kill_switch_exit_all")
         print("KILL SWITCH (EXIT_ALL): book fully closed, standing aside.")
+        logger.warning("KILL SWITCH EXIT_ALL: book fully closed")
         return
 
     # ---- 3. New entries ----
-    if not regime["bullish"]:
-        print("Regime bearish - holding cash, no new entries today.")
+    if regime["entry_size_mult"] == 0:
+        print(f"Regime tier '{regime['tier']}' blocks new entries today.")
         return
     if action in ("NO_NEW_ENTRIES", "EXIT_WEAKEST_HALF"):
         print(f"Kill switch state '{action}' blocks new entries today.")
@@ -191,8 +230,9 @@ def run():
         stop_price, atr_val = atr_stop(hist)
         entry_price = details["price"]
         conviction_mult = row.get("conviction_mult", 1.0)  # bounded 0.5-2.0, see screener.py
-        qty = size_position(entry_price, stop_price, sizing_equity, fetcher, symbol, conviction_mult)
-        qty = apply_kill_switch_to_size(qty, action)  # Apollo has final say, always - conviction never bypasses this
+        combined_mult = conviction_mult * regime["entry_size_mult"]  # CAUTION tier halves size; SEVERE already returned above
+        qty = size_position(entry_price, stop_price, sizing_equity, fetcher, symbol, combined_mult)
+        qty = apply_kill_switch_to_size(qty, action)  # Apollo has final say, always - conviction/regime never bypass this
         if qty <= 0:
             continue
 
@@ -217,7 +257,15 @@ def run():
         running_cash -= qty * entry_price
         positions = load_positions()
         print(f"ENTRY {symbol}: qty={qty} entry~{entry_price:.1f} stop={stop_price:.1f}")
+        logger.info(f"ENTRY {symbol} qty={qty} entry={entry_price:.1f} stop={stop_price:.1f} tier={regime['tier']}")
+        telemetry.log_trade(symbol, "BUY", qty, entry_price, f"new_entry_tier_{regime['tier']}")
 
 
 if __name__ == "__main__":
-    run()
+    logger = TradingLogger()
+    try:
+        run()
+        logger.info("Run completed")
+    except Exception as e:
+        logger.error(f"Run failed: {e}")
+        raise
