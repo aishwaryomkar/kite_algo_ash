@@ -13,7 +13,18 @@ import config
 from indicators import dma
 
 
-def evaluate_exit(symbol, pos, hist, rank_df, regime):
+def evaluate_exit(symbol, pos, hist, rank_df, regime, as_of=None):
+    """
+    as_of: the date to treat as "now" for the time-stop's days-held
+    calculation. Defaults to the real current date for live use. A
+    backtest MUST pass the simulated date here - without it, days_held
+    would be computed against the real calendar date this code happens to
+    run on, not the simulated one, making the time-stop fire almost
+    immediately on every position regardless of how long it was actually
+    "held" in the simulation.
+    """
+    current_date = as_of if as_of is not None else dt.date.today()
+
     close = hist["close"]
     last_price = close.iloc[-1]
     sma100 = dma(close, 100).iloc[-1]
@@ -30,7 +41,9 @@ def evaluate_exit(symbol, pos, hist, rank_df, regime):
         return "FULL_EXIT", "below_100dma"
 
     entry_date = dt.date.fromisoformat(pos["entry_date"])
-    days_held = (dt.date.today() - entry_date).days
+    if hasattr(current_date, "date"):
+        current_date = current_date.date()  # pandas Timestamp -> date, for a clean subtraction
+    days_held = (current_date - entry_date).days
     risk_per_share = pos["entry_price"] - pos["stop_price"]
     r_multiple = (last_price - pos["entry_price"]) / risk_per_share if risk_per_share > 0 else 0
 

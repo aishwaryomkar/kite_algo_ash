@@ -1,31 +1,86 @@
 """
 Sanity-check backtest - DIRECTIONAL, not execution-precise. No slippage, no
-partial fills, intraday stop-hits only checked at month-end marks. Use this
-to see whether the ranking + entry filter + regime logic produces a
-sensible-looking equity curve - then paper-trade live for at least one full
-regime cycle before real capital. This does NOT run by itself - it needs a
-live Kite session (real historical data), so run it on your EC2 box where
-Kite Connect is actually authenticated:
+partial fills. Exit logic now calls the REAL exit_engine.evaluate_exit()
+(stop, rank decay, 100DMA break, time stop, partial booking) instead of a
+simplified month-end-stop-only approximation - that gap was a real source
+of pessimistic bias versus what the live bot would actually do, since the
+live bot exits decaying/broken-trend positions much faster than "wait for
+either a hard stop or the next month's rebalance." Ranking also now
+replicates screener.py's actual relative-strength scoring and reuses the
+real add_conviction() function, point-in-time-sliced rather than refetched
+live (fetcher.historical() always returns up to TODAY, with no way to pass
+a historical cutoff - see _point_in_time_regime's docstring for the same
+issue solved the same way).
 
-    python backtest.py --universe nifty50 --fixed-buy 10000 --years 2
+Use this to see whether the ranking + entry filter + regime + exit logic
+together produce a sensible-looking equity curve - then paper-trade live
+for at least one full regime cycle before real capital. This does NOT run
+by itself - it needs a live Kite session (real historical data), so run it
+on your EC2 box where Kite Connect is actually authenticated:
+
+    python backtest.py --universe nifty50 --years 2
 
 Two sizing modes:
   --fixed-buy AMOUNT   Buy exactly AMOUNT (rupees, rounded to whole shares)
     of every signal that passes the filters, ignoring risk-based sizing,
     conviction scaling, and the capital-per-stock cap (MAX_POSITIONS still
-    applies). Useful for answering "what if I just put a flat Rs10k into
-    every signal" directly, without the risk-engine math in between.
+    applies).
   (default, no --fixed-buy)   Uses the same risk-based sizing as the live
     bot (ATR stop distance, RISK_PER_TRADE_PCT, conviction scaling, capital
-    cap) - closer to what main.py would actually have done historically.
+    cap).
 """
 import argparse
 import pandas as pd
 import config
-from indicators import atr, dma
+from indicators import atr, dma, returns
 from entry_filter import passes_entry_filter
 from regime_filter import classify_tier
 from risk_engine import size_position, atr_stop
+from exit_engine import evaluate_exit
+from screener import add_conviction
+
+
+def _point_in_time_rank(history, universe, as_of):
+    """
+    Replicates screener.rank_universe()'s scoring exactly (including
+    relative-strength-vs-benchmark when enabled), but sliced to `as_of`
+    instead of calling fetcher.historical() (which always returns data up
+    to TODAY - the same point-in-time problem _point_in_time_regime solves
+    for the regime check). Returns the FULL ranked dataframe, not just the
+    top N - evaluate_exit's rank-decay check needs to know a HELD
+    position's actual rank even if it has fallen out of the top 20.
+    """
+    bench = None
+    if config.RANK_BY_RELATIVE_STRENGTH:
+        bench_hist = history.get(config.REGIME_INDEX)
+        if bench_hist is not None and as_of in bench_hist.index:
+            bsl = bench_hist.loc[:as_of, "close"]
+            if len(bsl) >= 260:
+                bench = {252: returns(bsl, 252).iloc[-1], 126: returns(bsl, 126).iloc[-1], 63: returns(bsl, 63).iloc[-1]}
+
+    rows = []
+    for sym in universe:
+        h = history.get(sym)
+        if h is None or as_of not in h.index:
+            continue
+        sl = h.loc[:as_of]
+        if len(sl) < 260:
+            continue
+        close = sl["close"]
+        r12, r6, r3 = returns(close, 252).iloc[-1], returns(close, 126).iloc[-1], returns(close, 63).iloc[-1]
+        if pd.isna(r12) or pd.isna(r6) or pd.isna(r3):
+            continue
+        if bench:
+            r12, r6, r3 = r12 - bench[252], r6 - bench[126], r3 - bench[63]
+        score = config.MOM_WEIGHTS["12m"] * r12 + config.MOM_WEIGHTS["6m"] * r6 + config.MOM_WEIGHTS["3m"] * r3
+        rows.append({"symbol": sym, "score": score})
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df = df.sort_values("score", ascending=False).reset_index(drop=True)
+    df["rank"] = df.index + 1
+    return df
 
 
 def _point_in_time_regime(history, universe, as_of, equity):
@@ -124,42 +179,49 @@ def backtest(fetcher, universe, months=24, fixed_buy_amount=None,
             cash += monthly_contribution
             total_contributed += monthly_contribution
 
-        # 1. mark-to-market + month-end stop check on existing positions
+        # 1. rank universe as of this month-end - FULL ranking, not just
+        # top N, since evaluate_exit's rank-decay check needs a held
+        # position's actual current rank even if it fell out of the top 20
+        full_ranked = _point_in_time_rank(history, universe, as_of)
+
+        # 2. regime check AS OF this month-end (point-in-time, not today's
+        # date - see _point_in_time_regime's docstring for why this matters)
+        regime = _point_in_time_regime(history, universe, as_of, equity=cash)
+
+        # 3. manage existing positions through the REAL exit_engine logic -
+        # stop, rank decay, 100DMA break, time stop, partial booking. This
+        # replaces a much cruder "only checked at month-end stop-hit"
+        # approximation that under-modeled how fast the live bot actually
+        # cuts decaying positions.
         for sym in list(open_positions):
             h = history.get(sym)
             if h is None or as_of not in h.index:
                 continue
             pos = open_positions[sym]
-            price = h.loc[:as_of, "close"].iloc[-1]
-            if price <= pos["stop"]:
+            hist_slice = h.loc[:as_of]
+            decision, reason = evaluate_exit(sym, pos, hist_slice, full_ranked, regime, as_of=as_of)
+            price = hist_slice["close"].iloc[-1]
+
+            if decision == "FULL_EXIT":
                 cash += pos["qty"] * price
                 trade_log.append({"date": as_of, "symbol": sym, "action": "SELL",
-                                   "qty": pos["qty"], "price": price, "reason": "stop_hit"})
+                                   "qty": pos["qty"], "price": price, "reason": reason})
                 del open_positions[sym]
+            elif decision == "PARTIAL_EXIT":
+                partial_qty = int(pos["qty"] * config.PARTIAL_BOOK_PCT)
+                if partial_qty > 0:
+                    cash += partial_qty * price
+                    pos["qty"] -= partial_qty
+                    trade_log.append({"date": as_of, "symbol": sym, "action": "SELL",
+                                       "qty": partial_qty, "price": price, "reason": reason})
+                pos["partial_booked"] = True
 
-        # 2. rank universe as of this month-end
-        rows = []
-        for sym, h in history.items():
-            sl = h.loc[:as_of]
-            if len(sl) < 260:
-                continue
-            close = sl["close"]
-            score = (
-                config.MOM_WEIGHTS["12m"] * close.pct_change(252).iloc[-1]
-                + config.MOM_WEIGHTS["6m"] * close.pct_change(126).iloc[-1]
-                + config.MOM_WEIGHTS["3m"] * close.pct_change(63).iloc[-1]
-            )
-            rows.append({"symbol": sym, "score": score})
-        ranked = pd.DataFrame(rows)
-        if not ranked.empty:
-            ranked = ranked.sort_values("score", ascending=False).head(config.TOP_N_RANK)
-
-        # 3. regime check AS OF this month-end (point-in-time, not today's
-        # date - see _point_in_time_regime's docstring for why this matters)
-        regime = _point_in_time_regime(history, universe, as_of, equity=cash)
+        # 4. new entries - top N of the full ranking, with the SAME
+        # conviction scoring the live bot uses (z-scored against this
+        # month's other selected leaders, not reimplemented separately)
         entry_mult = regime["entry_size_mult"]
+        ranked = add_conviction(full_ranked.head(config.TOP_N_RANK).copy()) if not full_ranked.empty else full_ranked
 
-        # 4. new entries
         unrealized = sum(
             open_positions[s]["qty"] * history[s].loc[:as_of, "close"].iloc[-1]
             for s in open_positions
@@ -181,15 +243,21 @@ def backtest(fetcher, universe, months=24, fixed_buy_amount=None,
                 if entry <= stop:
                     continue
 
+                conviction_mult = row.get("conviction_mult", 1.0)
+                combined_mult = conviction_mult * entry_mult  # same combination main.py uses
+
                 if fixed_buy_amount is not None:
                     qty = int(fixed_buy_amount / entry)
                 else:
-                    qty = size_position(entry, stop, equity_now, fetcher, sym, conviction_mult=entry_mult)
+                    qty = size_position(entry, stop, equity_now, fetcher, sym, conviction_mult=combined_mult)
 
                 cost = qty * entry
                 if qty > 0 and cost <= cash:
                     cash -= cost
-                    open_positions[sym] = {"entry": entry, "stop": stop, "qty": qty}
+                    open_positions[sym] = {
+                        "entry_price": entry, "stop_price": stop, "qty": qty,
+                        "entry_date": as_of.strftime("%Y-%m-%d"), "partial_booked": False,
+                    }
                     trade_log.append({"date": as_of, "symbol": sym, "action": "BUY",
                                        "qty": qty, "price": entry, "reason": f"tier={regime['tier']}"})
 
