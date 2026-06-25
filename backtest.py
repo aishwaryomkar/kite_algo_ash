@@ -77,10 +77,16 @@ def backtest(fetcher, universe, months=24, fixed_buy_amount=None,
     lump sum was deployed on day one - closer to how this account actually
     gets funded in practice.
     """
-    history = {sym: fetcher.historical(sym, days=900) for sym in universe}
+    # Fetch enough history to cover the requested backtest window PLUS the
+    # ~260-day momentum lookback the ranking needs at the very first
+    # evaluated month - a hardcoded 900 days here silently truncated any
+    # --years request longer than ~30 months to whatever was available,
+    # with no warning that it had done so.
+    fetch_days = max(900, months * 31 + 280)
+    history = {sym: fetcher.historical(sym, days=fetch_days) for sym in universe}
     history = {k: v for k, v in history.items() if not v.empty}
     if config.REGIME_INDEX not in history:
-        history[config.REGIME_INDEX] = fetcher.historical(config.REGIME_INDEX, days=900)
+        history[config.REGIME_INDEX] = fetcher.historical(config.REGIME_INDEX, days=fetch_days)
 
     cash = starting_capital
     total_contributed = starting_capital
@@ -88,13 +94,29 @@ def backtest(fetcher, universe, months=24, fixed_buy_amount=None,
     equity_curve = []
     trade_log = []
 
+    # Benchmark: same monthly contribution schedule, but just buys the
+    # regime index every month instead of running the strategy. Without
+    # this, a negative "gain/loss vs contributed" number is unanchored -
+    # it doesn't tell you whether the strategy did better or worse than
+    # simply not running it at all.
+    bench_hist = history.get(config.REGIME_INDEX)
+    bench_units = 0.0
+
     all_dates = sorted(set().union(*[h.index for h in history.values()]))
     month_ends = (
         pd.Series(all_dates)
         .groupby(pd.Series(all_dates).dt.to_period("M"))
         .max()
-        .tolist()[-months:]
+        .tolist()
     )
+    if len(month_ends) < months:
+        print(
+            f"WARNING: requested {months} months but only {len(month_ends)} are "
+            f"available from the fetched history - results below cover "
+            f"{len(month_ends)} months, not {months}. This is most likely Kite's "
+            f"historical data simply not going back further for these symbols."
+        )
+    month_ends = month_ends[-months:]
 
     for as_of in month_ends:
         # 0. monthly capital injection - happens before that month's trading
@@ -175,10 +197,23 @@ def backtest(fetcher, universe, months=24, fixed_buy_amount=None,
             open_positions[s]["qty"] * history[s].loc[:as_of, "close"].iloc[-1]
             for s in open_positions
         )
+
+        # Benchmark gets the SAME monthly_contribution that was added to
+        # cash above, deployed in full into the index at this month-end's
+        # close - simple, deterministic, no cash drag, so any gap between
+        # this and the strategy's result is attributable to the strategy's
+        # stock selection/timing, not to contribution timing differences.
+        bench_value = None
+        if bench_hist is not None and as_of in bench_hist.index and monthly_contribution:
+            bench_price = bench_hist.loc[as_of, "close"]
+            bench_units += monthly_contribution / bench_price
+            bench_value = bench_units * bench_price
+
         equity_curve.append({
             "date": as_of, "equity": cash + unrealized, "cash": cash,
             "positions": len(open_positions), "regime_tier": regime["tier"],
             "total_contributed": total_contributed,
+            "benchmark_equity": bench_value,
         })
 
     return pd.DataFrame(equity_curve), pd.DataFrame(trade_log)
@@ -197,7 +232,23 @@ def summarize(equity_df):
     if contributed > 0:
         print(f"Gain/loss vs. what you put in: {(end / contributed - 1):+.1%}")
     print(f"Max drawdown (peak-to-trough on the equity curve itself): {drawdown.min():.1%}")
+    print(
+        "NOTE: this drawdown is computed on the raw equity curve, which gets "
+        "topped up every month regardless of performance - fresh contributions "
+        "can mask real underlying losses, making this number look tamer than "
+        "the strategy's actual performance. The benchmark comparison below is "
+        "the more honest read."
+    )
     print(f"Months with SEVERE regime tier: {(equity_df['regime_tier'] == 'SEVERE').sum()} / {len(equity_df)}")
+
+    bench_end = equity_df["benchmark_equity"].iloc[-1] if "benchmark_equity" in equity_df else None
+    if bench_end is not None and pd.notna(bench_end):
+        print(f"\nBenchmark (same monthly contributions into {config.REGIME_INDEX} instead): Rs{bench_end:,.0f}")
+        if contributed > 0:
+            print(f"Benchmark gain/loss vs. what you put in: {(bench_end / contributed - 1):+.1%}")
+        edge = end - bench_end
+        verdict = "OUTPERFORMED" if edge > 0 else "UNDERPERFORMED"
+        print(f"Strategy {verdict} the benchmark by Rs{abs(edge):,.0f} on the same contributions.")
 
 
 if __name__ == "__main__":

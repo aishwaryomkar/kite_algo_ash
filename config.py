@@ -67,14 +67,14 @@ REGIME_SOFTEN_BELOW_EQUITY = 50_000
 # trend check, i.e. the single rule most responsible for avoiding the
 # worst drawdowns, regardless of how small the capital at stake is right
 # now. Softening (the default) keeps that check; this does not.
-REGIME_FULLY_BYPASS_BELOW_EQUITY = True
+REGIME_FULLY_BYPASS_BELOW_EQUITY = False
 
 # Master kill-switch on the regime filter itself. False = regime never
 # gates anything, at any equity - every entry runs purely on the stock-level
 # signals. Use this if you've decided the regime overlay isn't worth what
 # it costs you; it's a one-line decision, not something to fight with config
 # tuning.
-REGIME_FILTER_ENABLED = False
+REGIME_FILTER_ENABLED = True
 
 # ---- Monthly ranking ----
 MOM_WEIGHTS = {"12m": 0.50, "6m": 0.30, "3m": 0.20}
@@ -100,7 +100,7 @@ BREAKOUT_VOLUME_MULT = 1.5            # today's volume must be >= 1.5x the trail
 # up. See fundamentals.py's module docstring for confidence levels - the
 # shareholding piece is reasonably solid; EPS growth (C/A) is an
 # unverified stub, not a working feature, and isn't wired in anywhere.
-CANSLIM_FUNDAMENTALS_ENABLED = True
+CANSLIM_FUNDAMENTALS_ENABLED = False
 MAX_PROMOTER_HOLDING_DROP_PCT = 1.0   # flag if promoter holding drops more than this, QoQ (percentage points)
 
 # Which fundamentals source to use when CANSLIM_FUNDAMENTALS_ENABLED is on.
