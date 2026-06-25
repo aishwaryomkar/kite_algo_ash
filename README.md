@@ -100,6 +100,41 @@ two liquidity-buffer rounding/haircut bugs in `test_liquidity_buffer.py`.
 If you change `risk_engine.py`, `regime_filter.py`, or `liquidity_buffer.py`,
 run this first.
 
+## CANSLIM fundamentals (C/A/I) - free, Indian-market-specific
+
+Off by default (`CANSLIM_FUNDAMENTALS_ENABLED` in `config.py`). Two sources,
+chosen via `CANSLIM_SOURCE`:
+
+- **`"screener"` (default)** - covers all three letters from one page
+  fetch per symbol: quarterly EPS YoY growth (C), Screener's own
+  pre-computed 3-year profit CAGR (A), and combined FII+DII holding trend
+  (I). Parsing was verified against a real fetched page
+  (AVANTEL's, June 2026) with hand-calculated expected values matching
+  exactly - not guessed field names.
+
+  **Read this before enabling it:** Screener.in's Terms of Service
+  license materials for "personal, non-commercial transitory viewing
+  only" and separately prohibit copying - an automated fetch that parses
+  and stores values goes beyond that, independent of commercial use. This
+  is a specific, explicit clause, not a vague scraping-in-general risk.
+  Mitigated as much as a scraper reasonably can be: identifies itself
+  honestly via User-Agent, rate-limits to one request every 2 seconds,
+  and caches each symbol for 25 days - since this only runs against your
+  ~20 monthly rebalance candidates, not hundreds of symbols daily, actual
+  load on their servers is minimal regardless. Still your call to make,
+  knowing the actual clause.
+
+- **`"nse"`** - no scraping, uses NSE's own documented `shareholding()` API
+  (via the `nse` package) instead. Only covers a weaker proxy for I
+  (promoter-holding trend, since NSE's response doesn't cleanly separate
+  FII/DII) and doesn't cover C or A at all - NSE has no clean public
+  endpoint for EPS growth.
+
+Thresholds (`CANSLIM_MIN_QUARTERLY_EPS_GROWTH_PCT`,
+`CANSLIM_MIN_3YR_PROFIT_CAGR_PCT`, `CANSLIM_MAX_INSTITUTIONAL_HOLDING_DROP_PCT`)
+all default to lenient values (0%, i.e. "just don't be shrinking") - tighten
+them once you've watched it run against real candidates for a while.
+
 ## Before running with real capital
 
 1. Run `backtest.py` first — it's a rough sanity check (see its docstring

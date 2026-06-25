@@ -14,9 +14,9 @@ def make_healthy_hist(last_price=150):
     return pd.DataFrame({"close": closes})
 
 
-CAUTION_REGIME = {"force_exit_all": False, "rank_exit_threshold": 25}
-SEVERE_REGIME = {"force_exit_all": True, "rank_exit_threshold": 50}
-BULLISH_REGIME = {"force_exit_all": False, "rank_exit_threshold": 50}
+CAUTION_REGIME = {"rank_exit_threshold": 25}
+SEVERE_REGIME = {"rank_exit_threshold": 25}
+BULLISH_REGIME = {"rank_exit_threshold": 50}
 
 
 class TestExitEngine(unittest.TestCase):
@@ -25,24 +25,20 @@ class TestExitEngine(unittest.TestCase):
         self.pos = {"stop_price": 90, "entry_price": 100, "entry_date": "2026-06-01", "partial_booked": True}
         self.rank_df = pd.DataFrame({"symbol": ["GOODSTOCK"], "rank": [3]})
 
-    def test_severe_tier_force_exits_regardless_of_stock_health(self):
-        decision, reason = evaluate_exit("GOODSTOCK", self.pos, self.hist, self.rank_df, SEVERE_REGIME)
-        self.assertEqual(decision, "FULL_EXIT")
-        self.assertEqual(reason, "market_filter_severe")
+    def test_regime_never_force_exits_a_healthy_position_at_any_tier(self):
+        """Core design decision: regime gates entries, not exits - a stock
+        still in a clean uptrend, ranked top-3, should never get force-sold
+        just because the regime read is bad, at ANY tier."""
+        for regime in (CAUTION_REGIME, SEVERE_REGIME, BULLISH_REGIME):
+            decision, reason = evaluate_exit("GOODSTOCK", self.pos, self.hist, self.rank_df, regime)
+            self.assertNotEqual(decision, "FULL_EXIT", f"failed for regime={regime}")
 
-    def test_caution_tier_does_not_force_exit_a_healthy_position(self):
-        """This is the core behavioral fix from the original binary design:
-        a stock still in a clean uptrend, ranked top-3, should NOT get
-        force-sold just because the regime is in CAUTION."""
-        decision, reason = evaluate_exit("GOODSTOCK", self.pos, self.hist, self.rank_df, CAUTION_REGIME)
-        self.assertNotEqual(reason, "market_filter_severe")
-        self.assertNotEqual(decision, "FULL_EXIT")
-
-    def test_stop_hit_still_exits_even_in_bullish_regime(self):
+    def test_stop_hit_still_exits_regardless_of_regime(self):
         hist = make_healthy_hist(last_price=85)  # below the 90 stop
-        decision, reason = evaluate_exit("X", self.pos, hist, self.rank_df, BULLISH_REGIME)
-        self.assertEqual(decision, "FULL_EXIT")
-        self.assertEqual(reason, "stop_hit")
+        for regime in (CAUTION_REGIME, SEVERE_REGIME, BULLISH_REGIME):
+            decision, reason = evaluate_exit("X", self.pos, hist, self.rank_df, regime)
+            self.assertEqual(decision, "FULL_EXIT")
+            self.assertEqual(reason, "stop_hit")
 
     def test_caution_uses_tighter_rank_threshold(self):
         rank_df = pd.DataFrame({"symbol": ["X"], "rank": [30]})  # inside 50, outside 25
@@ -60,7 +56,7 @@ class TestExitEngine(unittest.TestCase):
         rank_df = pd.DataFrame({"symbol": ["X"], "rank": [40]})
         pos = {"stop_price": 50, "entry_price": 100, "entry_date": "2026-06-01", "partial_booked": True}
         hist = make_healthy_hist(last_price=150)
-        custom_regime = {"force_exit_all": False, "rank_exit_threshold": 100}
+        custom_regime = {"rank_exit_threshold": 100}
         decision, _ = evaluate_exit("X", pos, hist, rank_df, custom_regime)
         self.assertNotEqual(decision, "FULL_EXIT")
 

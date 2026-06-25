@@ -16,27 +16,23 @@ class TestRegimeTiers(unittest.TestCase):
             r = regime_state(None, [], equity=200000)
         self.assertEqual(r["tier"], "BULLISH")
         self.assertEqual(r["entry_size_mult"], 1.0)
-        self.assertFalse(r["force_exit_all"])
 
-    def test_signals_disagree_is_caution_not_severe(self):
+    def test_signals_disagree_is_caution(self):
         with patch.object(regime_filter, "index_regime_bullish", return_value=True), \
              patch.object(regime_filter, "breadth_above_200dma_pct", return_value=0.25):
             r = regime_state(None, [], equity=200000)
         self.assertEqual(r["tier"], "CAUTION")
         self.assertEqual(r["entry_size_mult"], config.CAUTION_ENTRY_SIZE_MULT)
-        self.assertFalse(r["force_exit_all"], "CAUTION must never force-exit existing positions")
 
-    def test_both_confirm_breakdown_is_severe(self):
+    def test_both_confirm_breakdown_is_severe_but_still_does_not_force_exit(self):
         with patch.object(regime_filter, "index_regime_bullish", return_value=False), \
              patch.object(regime_filter, "breadth_above_200dma_pct", return_value=0.10):
             r = regime_state(None, [], equity=200000)
         self.assertEqual(r["tier"], "SEVERE")
         self.assertEqual(r["entry_size_mult"], 0.0)
-        self.assertTrue(r["force_exit_all"])
+        self.assertNotIn("force_exit_all", r, "force_exit_all was deliberately removed - regime never forces an exit")
 
     def test_small_equity_softens_breadth_requirement(self):
-        # below REGIME_SOFTEN_BELOW_EQUITY, weak breadth alone shouldn't
-        # downgrade from BULLISH as long as the index trend itself holds
         with patch.object(regime_filter, "index_regime_bullish", return_value=True), \
              patch.object(regime_filter, "breadth_above_200dma_pct", return_value=0.10):
             small = regime_state(None, [], equity=10000)
@@ -48,11 +44,18 @@ class TestRegimeTiers(unittest.TestCase):
         with patch.object(regime_filter, "index_regime_bullish", return_value=False), \
              patch.object(regime_filter, "breadth_above_200dma_pct", return_value=0.10):
             r = regime_state(None, [], equity=10000)
-        self.assertNotEqual(r["tier"], "BULLISH",
-                             "softening for small accounts must not bypass a confirmed bad index trend")
+        self.assertNotEqual(r["tier"], "BULLISH")
 
     def test_full_bypass_flag_only_active_when_explicitly_enabled(self):
         with patch.object(config, "REGIME_FULLY_BYPASS_BELOW_EQUITY", True), \
+             patch.object(regime_filter, "index_regime_bullish", return_value=False), \
+             patch.object(regime_filter, "breadth_above_200dma_pct", return_value=0.0):
+            r = regime_state(None, [], equity=10000)
+        self.assertEqual(r["tier"], "BULLISH")
+        self.assertEqual(r["entry_size_mult"], 1.0)
+
+    def test_master_toggle_off_means_always_bullish_regardless_of_data(self):
+        with patch.object(config, "REGIME_FILTER_ENABLED", False), \
              patch.object(regime_filter, "index_regime_bullish", return_value=False), \
              patch.object(regime_filter, "breadth_above_200dma_pct", return_value=0.0):
             r = regime_state(None, [], equity=10000)

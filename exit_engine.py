@@ -1,10 +1,12 @@
 """
 Exit logic, evaluated once per day for every open position, in priority
-order: SEVERE-tier market filter -> hard stop -> rank decay (tier-aware
-threshold) -> trend break -> time stop -> partial profit booking.
+order: hard stop -> rank decay (tier-aware threshold) -> trend break ->
+time stop -> partial profit booking.
 
-Only the SEVERE tier forces an exit regardless of how the individual stock
-looks - see regime_filter.py for why CAUTION deliberately does not.
+Regime does NOT force an exit at any tier, including SEVERE - that's a
+deliberate choice, not an oversight. Every exit here is driven by the
+stock's own behavior; regime only ever affects entries and how tight the
+rank threshold is.
 """
 import datetime as dt
 import config
@@ -15,9 +17,6 @@ def evaluate_exit(symbol, pos, hist, rank_df, regime):
     close = hist["close"]
     last_price = close.iloc[-1]
     sma100 = dma(close, 100).iloc[-1]
-
-    if regime["force_exit_all"]:
-        return "FULL_EXIT", "market_filter_severe"
 
     if last_price <= pos["stop_price"]:
         return "FULL_EXIT", "stop_hit"

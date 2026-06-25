@@ -1,13 +1,44 @@
 """
 Monthly momentum ranking: 50/30/20 weighting on 12-month/6-month/3-month
-returns, exactly as specified.
+returns - by default now RELATIVE to the benchmark index, not raw absolute
+return.
+
+Why relative: in a strong bull run almost every stock has a big positive
+12m return, so raw-return ranking mostly surfaces high-beta names riding
+the tide, not genuine outperformers. Ranking by EXCESS return over the
+index answers "is this actually beating the market" rather than "did this
+go up a lot" - this is CANSLIM's "L" (Leader, not laggard): relative
+strength against the market is the actual selection criterion, not
+absolute price change. Set RANK_BY_RELATIVE_STRENGTH = False in config.py
+to go back to plain absolute-return ranking.
 """
 import pandas as pd
 import config
 from indicators import returns
 
 
+def _benchmark_returns(fetcher):
+    """Returns a dict of {period_days: benchmark_return} for the configured
+    regime index, used to compute excess return per stock. Returns None for
+    any period that can't be computed (insufficient history) rather than
+    raising - callers fall back to absolute return in that case."""
+    try:
+        hist = fetcher.historical(config.REGIME_INDEX, days=400)
+        if hist.empty or len(hist) < 260:
+            return None
+        close = hist["close"]
+        return {
+            252: returns(close, 252).iloc[-1],
+            126: returns(close, 126).iloc[-1],
+            63: returns(close, 63).iloc[-1],
+        }
+    except Exception:
+        return None
+
+
 def rank_universe(fetcher, universe):
+    bench = _benchmark_returns(fetcher) if config.RANK_BY_RELATIVE_STRENGTH else None
+
     rows = []
     for sym in universe:
         try:
@@ -20,6 +51,10 @@ def rank_universe(fetcher, universe):
             r3 = returns(close, 63).iloc[-1]
             if pd.isna(r12) or pd.isna(r6) or pd.isna(r3):
                 continue
+
+            if bench:
+                r12, r6, r3 = r12 - bench[252], r6 - bench[126], r3 - bench[63]
+
             score = (
                 config.MOM_WEIGHTS["12m"] * r12
                 + config.MOM_WEIGHTS["6m"] * r6

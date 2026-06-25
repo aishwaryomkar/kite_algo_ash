@@ -24,13 +24,23 @@ from indicators import dma, dma_slope
 
 
 def index_regime_bullish(fetcher):
-    hist = fetcher.historical(config.REGIME_INDEX, days=400)
-    close = hist["close"]
-    sma200 = dma(close, config.REGIME_DMA_PERIOD)
-    slope = dma_slope(close, config.REGIME_DMA_PERIOD, config.REGIME_SLOPE_LOOKBACK)
-    price_above = close.iloc[-1] > sma200.iloc[-1]
-    slope_positive = slope.iloc[-1] > 0
-    return bool(price_above and slope_positive)
+    try:
+        hist = fetcher.historical(config.REGIME_INDEX, days=400)
+        if hist.empty or len(hist) < config.REGIME_DMA_PERIOD + config.REGIME_SLOPE_LOOKBACK:
+            print(f"WARNING: {config.REGIME_INDEX} returned insufficient history "
+                  f"({len(hist) if not hist.empty else 0} rows) - treating regime as not-bullish "
+                  f"rather than crashing. Check the symbol is correct and Kite is returning data for it.")
+            return False
+        close = hist["close"]
+        sma200 = dma(close, config.REGIME_DMA_PERIOD)
+        slope = dma_slope(close, config.REGIME_DMA_PERIOD, config.REGIME_SLOPE_LOOKBACK)
+        price_above = close.iloc[-1] > sma200.iloc[-1]
+        slope_positive = slope.iloc[-1] > 0
+        return bool(price_above and slope_positive)
+    except Exception as e:
+        print(f"WARNING: index_regime_bullish failed ({e}) - treating regime as not-bullish "
+              f"rather than crashing the whole run. This needs investigating, not ignoring.")
+        return False
 
 
 def breadth_above_200dma_pct(fetcher, universe):
@@ -54,32 +64,53 @@ def breadth_above_200dma_pct(fetcher, universe):
     return (above / total) if total else 0.0
 
 
-def regime_state(fetcher, universe, equity=None):
-    idx_ok = index_regime_bullish(fetcher)
-    breadth_pct = breadth_above_200dma_pct(fetcher, universe)
+def classify_tier(idx_ok, breadth_pct, equity=None):
+    """
+    Pure classification logic - no fetcher, no I/O. Both the live path
+    (regime_state, using today's data) and the backtest (using point-in-time
+    sliced historical data) call this SAME function, so the tier thresholds
+    can't drift out of sync between live and backtest the way duplicated
+    logic eventually does.
+
+    Regime NEVER force-sells an existing position, at any tier - that
+    decision moved entirely to exit_engine.py's own stop/rank/trend/time
+    signals. Regime's only lever is gating NEW entries (entry_size_mult).
+    A real, broad-based breakdown still shows up - just as "stop adding
+    risk," not "panic-liquidate everything regardless of how each name
+    individually looks."
+    """
+    if not config.REGIME_FILTER_ENABLED:
+        return {
+            "tier": "BULLISH", "bullish": True, "index_ok": True, "breadth_pct": 1.0,
+            "graduated_mode": False, "entry_size_mult": 1.0,
+            "rank_exit_threshold": config.RANK_EXIT_THRESHOLD,
+        }
 
     graduated = equity is not None and equity < config.REGIME_SOFTEN_BELOW_EQUITY
 
     if graduated and config.REGIME_FULLY_BYPASS_BELOW_EQUITY:
-        tier = "BULLISH"  # idx_ok/breadth_pct still computed above for visibility, just don't gate anything
+        tier = "BULLISH"
     elif idx_ok and (breadth_pct >= config.BREADTH_MIN_PCT_ABOVE_200DMA or graduated):
-        # At small equity, breadth weakness alone doesn't downgrade the
-        # tier - mirrors the prior softened-mode behavior.
         tier = "BULLISH"
     elif idx_ok or breadth_pct >= config.BREADTH_SEVERE_PCT:
-        tier = "CAUTION"   # signals disagree, or both mildly weak - not a confirmed breakdown
+        tier = "CAUTION"
     else:
-        tier = "SEVERE"    # both confirm a broad breakdown
+        tier = "SEVERE"
 
     return {
         "tier": tier,
-        "bullish": tier == "BULLISH",  # kept for any code/printouts checking this directly
+        "bullish": tier == "BULLISH",
         "index_ok": idx_ok,
         "breadth_pct": round(breadth_pct, 3),
         "graduated_mode": graduated,
         "entry_size_mult": {"BULLISH": 1.0, "CAUTION": config.CAUTION_ENTRY_SIZE_MULT, "SEVERE": 0.0}[tier],
-        "force_exit_all": tier == "SEVERE",
         "rank_exit_threshold": (
-            config.RANK_EXIT_THRESHOLD_CAUTION if tier == "CAUTION" else config.RANK_EXIT_THRESHOLD
+            config.RANK_EXIT_THRESHOLD_CAUTION if tier in ("CAUTION", "SEVERE") else config.RANK_EXIT_THRESHOLD
         ),
     }
+
+
+def regime_state(fetcher, universe, equity=None):
+    idx_ok = index_regime_bullish(fetcher)
+    breadth_pct = breadth_above_200dma_pct(fetcher, universe)
+    return classify_tier(idx_ok, breadth_pct, equity)

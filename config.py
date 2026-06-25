@@ -69,10 +69,49 @@ REGIME_SOFTEN_BELOW_EQUITY = 50_000
 # now. Softening (the default) keeps that check; this does not.
 REGIME_FULLY_BYPASS_BELOW_EQUITY = False
 
+# Master kill-switch on the regime filter itself. False = regime never
+# gates anything, at any equity - every entry runs purely on the stock-level
+# signals. Use this if you've decided the regime overlay isn't worth what
+# it costs you; it's a one-line decision, not something to fight with config
+# tuning.
+REGIME_FILTER_ENABLED = True
+
 # ---- Monthly ranking ----
 MOM_WEIGHTS = {"12m": 0.50, "6m": 0.30, "3m": 0.20}
 TOP_N_RANK = 20
 RANK_EXIT_THRESHOLD = 50              # exit if rank falls below this
+# Rank by excess return over the benchmark index, not raw absolute return -
+# CANSLIM's "L" (Leader vs laggard). See screener.py's docstring for why
+# this matters more in strong bull runs than it sounds like it would.
+RANK_BY_RELATIVE_STRENGTH = True
+
+# ---- Entry style ----
+# "pullback" (default) or "breakout" - see entry_filter.py's docstring,
+# these are mutually exclusive philosophies, not combinable into one filter.
+ENTRY_STYLE = "pullback"
+BREAKOUT_LOOKBACK_DAYS = 252          # "new high" = highest close in the trailing year
+BREAKOUT_PROXIMITY_PCT = 0.02         # within 2% of that high counts as "at" it, not just the exact tick
+BREAKOUT_VOLUME_MULT = 1.5            # today's volume must be >= 1.5x the trailing 20-day average
+
+# ---- CANSLIM fundamentals (I - institutional sponsorship) ----
+# OFF by default - turn on only after you've run fundamentals.py against a
+# few real symbols on your own machine (this sandbox can't reach
+# nseindia.com to verify it end-to-end) and confirmed the field names hold
+# up. See fundamentals.py's module docstring for confidence levels - the
+# shareholding piece is reasonably solid; EPS growth (C/A) is an
+# unverified stub, not a working feature, and isn't wired in anywhere.
+CANSLIM_FUNDAMENTALS_ENABLED = False
+MAX_PROMOTER_HOLDING_DROP_PCT = 1.0   # flag if promoter holding drops more than this, QoQ (percentage points)
+
+# Which fundamentals source to use when CANSLIM_FUNDAMENTALS_ENABLED is on.
+# "screener" covers C, A, and I from one page fetch (stronger), but scrapes
+# Screener.in - see fundamentals.py's module docstring for the specific ToS
+# clause this runs up against. "nse" only covers a weaker I proxy
+# (promoter-holding trend), via NSE's own documented API - no scraping.
+CANSLIM_SOURCE = "screener"  # "screener" or "nse"
+CANSLIM_MIN_QUARTERLY_EPS_GROWTH_PCT = 0.0   # C: require YoY quarterly EPS growth above this
+CANSLIM_MIN_3YR_PROFIT_CAGR_PCT = 0.0        # A: require 3yr compounded profit growth above this
+CANSLIM_MAX_INSTITUTIONAL_HOLDING_DROP_PCT = 0.5  # I: flag if combined FII+DII holding drops more than this, QoQ
 
 # ---- Entry filter ----
 RSI_PERIOD = 14

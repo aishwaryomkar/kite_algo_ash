@@ -51,9 +51,13 @@ def load_excluded_holdings():
         return {row["symbol"].strip().upper() for row in csv.DictReader(f)}
 
 
-def apply_liquidity_filter(symbols, fetcher):
+def apply_liquidity_filter(symbols, fetcher, max_price=None):
     """Drop symbols below the turnover floor, outside the price band, or
-    on the exclusion list."""
+    on the exclusion list. max_price overrides config.MAX_PRICE - used by
+    the backtest to test the full universe without the live bot's
+    affordability ceiling, which makes sense for a tiny live account but
+    not for evaluating whether the strategy itself has edge."""
+    price_ceiling = config.MAX_PRICE if max_price is None else max_price
     excluded = load_excluded_holdings()
     keep = []
     for sym in symbols:
@@ -66,7 +70,7 @@ def apply_liquidity_filter(symbols, fetcher):
             recent = hist.tail(config.TURNOVER_LOOKBACK_DAYS)
             avg_turnover = (recent["close"] * recent["volume"]).mean()
             last_price = recent["close"].iloc[-1]
-            if not (config.MIN_PRICE <= last_price <= config.MAX_PRICE):
+            if not (config.MIN_PRICE <= last_price <= price_ceiling):
                 continue
             if avg_turnover >= config.MIN_AVG_TURNOVER:
                 keep.append(sym)
@@ -76,6 +80,6 @@ def apply_liquidity_filter(symbols, fetcher):
     return keep
 
 
-def build_universe(fetcher, universe_choice="nifty500"):
+def build_universe(fetcher, universe_choice="nifty500", max_price=None):
     raw = fetch_nifty50_list() if universe_choice == "nifty50" else fetch_nifty500_list()
-    return apply_liquidity_filter(raw, fetcher)
+    return apply_liquidity_filter(raw, fetcher, max_price=max_price)

@@ -47,11 +47,15 @@ from exit_engine import evaluate_exit
 from liquidity_buffer import redeem_for_shortfall, get_buffer_holding
 from monitoring import TradingLogger, TelemetryCollector
 
+# fundamentals.py / the nse package are only needed if CANSLIM_FUNDAMENTALS_ENABLED
+# is turned on - imported lazily inside run() so this isn't a hard dependency
+# for everyone running with it off (the default).
+
 
 def is_first_trading_day_of_month():
     # Crude check - good enough for a monthly cron job. Swap in an actual
     # NSE trading-calendar lookup if a holiday ever lands on day 1-3.
-    return dt.date.today().day <= 30
+    return dt.date.today().day <= 3
 
 
 def run():
@@ -63,6 +67,12 @@ def run():
     fetcher = DataFetcher(kite)
     sector_map = load_sector_map()
     positions = load_positions()
+
+    nse_client = None
+    if config.CANSLIM_FUNDAMENTALS_ENABLED:
+        from nse import NSE
+        import fundamentals
+        nse_client = NSE(download_folder="/tmp/nse_downloads")
 
     margins = kite.margins("equity")
     # Use available.cash specifically, not "net" - net can include collateral
@@ -106,6 +116,22 @@ def run():
         return
 
     universe = build_universe(fetcher)
+    universe_msg = f"Universe: {len(universe)} symbols after liquidity/price filters"
+    print(universe_msg)
+    logger.info(universe_msg)
+    if len(universe) < 20:
+        warn_msg = (
+            f"Universe came back with only {len(universe)} symbols - that's suspiciously "
+            f"small for Nifty 500 with a Rs100-{config.MAX_PRICE} price band. Likely causes: "
+            f"the NSE list fetch failed and fell back to a missing/stale local cache, or "
+            f"Kite's instrument list isn't matching most symbols (check for repeated "
+            f"'Instrument token not found' lines above). A near-empty universe will also "
+            f"make the regime breadth check read 0.0 (0 stocks found, not '0% bullish'), "
+            f"which can misleadingly look like a SEVERE market regime."
+        )
+        print(warn_msg)
+        logger.warning(warn_msg)
+
     # Graduated regime enforcement: while trading_equity is small, the full
     # breadth-confirmed gate means real stretches of zero buys, at a time
     # when the absolute rupee cost of "buying into a soft market" is also
@@ -226,6 +252,15 @@ def run():
         passed, details = passes_entry_filter(hist)
         if not passed:
             continue
+
+        if config.CANSLIM_FUNDAMENTALS_ENABLED:
+            canslim_ok, canslim_details = fundamentals.canslim_passes(symbol, nse_client=nse_client)
+            if canslim_ok is None:
+                print(f"Skipping {symbol}: CANSLIM check inconclusive - {canslim_details.get('error')}")
+                continue
+            if not canslim_ok:
+                print(f"Skipping {symbol}: failed CANSLIM fundamentals check - {canslim_details}")
+                continue
 
         stop_price, atr_val = atr_stop(hist)
         entry_price = details["price"]

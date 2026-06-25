@@ -22,10 +22,51 @@ Two sizing modes:
 import argparse
 import pandas as pd
 import config
-from indicators import atr
+from indicators import atr, dma
 from entry_filter import passes_entry_filter
-from regime_filter import regime_state
+from regime_filter import classify_tier
 from risk_engine import size_position, atr_stop
+
+
+def _point_in_time_regime(history, universe, as_of, equity):
+    """
+    Regime read AS OF a specific historical date, not today. fetcher.historical()
+    always fetches up to the CURRENT date with no way to pass a cutoff, so
+    calling regime_state(fetcher, ...) inside a backtest loop silently
+    computes TODAY's regime on every iteration regardless of which month is
+    being evaluated - a real bug found in production: a 24-month backtest
+    showed "24/24 months SEVERE" because it was reading today's regime 24
+    times, not 24 different historical months. This slices the ALREADY
+    historical-fetched `history` dict up to `as_of` instead, and reuses the
+    exact same tier-classification logic as the live bot via classify_tier().
+    """
+    idx_hist = history.get(config.REGIME_INDEX)
+    if idx_hist is None or as_of not in idx_hist.index:
+        idx_ok = False  # no data yet this far back - treat conservatively
+    else:
+        close = idx_hist.loc[:as_of, "close"]
+        if len(close) < config.REGIME_DMA_PERIOD + config.REGIME_SLOPE_LOOKBACK:
+            idx_ok = False
+        else:
+            sma200 = dma(close, config.REGIME_DMA_PERIOD)
+            slope = (sma200 - sma200.shift(config.REGIME_SLOPE_LOOKBACK)) / config.REGIME_SLOPE_LOOKBACK
+            idx_ok = bool(close.iloc[-1] > sma200.iloc[-1] and slope.iloc[-1] > 0)
+
+    above, total = 0, 0
+    for sym in universe:
+        h = history.get(sym)
+        if h is None or as_of not in h.index:
+            continue
+        sl = h.loc[:as_of, "close"]
+        if len(sl) < config.REGIME_DMA_PERIOD:
+            continue
+        sma200 = dma(sl, config.REGIME_DMA_PERIOD)
+        total += 1
+        if sl.iloc[-1] > sma200.iloc[-1]:
+            above += 1
+    breadth_pct = (above / total) if total else 0.0
+
+    return classify_tier(idx_ok, breadth_pct, equity)
 
 
 def backtest(fetcher, universe, months=24, fixed_buy_amount=None,
@@ -38,6 +79,8 @@ def backtest(fetcher, universe, months=24, fixed_buy_amount=None,
     """
     history = {sym: fetcher.historical(sym, days=900) for sym in universe}
     history = {k: v for k, v in history.items() if not v.empty}
+    if config.REGIME_INDEX not in history:
+        history[config.REGIME_INDEX] = fetcher.historical(config.REGIME_INDEX, days=900)
 
     cash = starting_capital
     total_contributed = starting_capital
@@ -89,9 +132,9 @@ def backtest(fetcher, universe, months=24, fixed_buy_amount=None,
         if not ranked.empty:
             ranked = ranked.sort_values("score", ascending=False).head(config.TOP_N_RANK)
 
-        # 3. regime check as of this month-end (uses the SAME 3-tier logic
-        # as the live bot - SEVERE blocks entries entirely, CAUTION halves size)
-        regime = regime_state(fetcher, universe, equity=cash)
+        # 3. regime check AS OF this month-end (point-in-time, not today's
+        # date - see _point_in_time_regime's docstring for why this matters)
+        regime = _point_in_time_regime(history, universe, as_of, equity=cash)
         entry_mult = regime["entry_size_mult"]
 
         # 4. new entries
@@ -167,6 +210,11 @@ if __name__ == "__main__":
                          help="Capital already in the account before the backtest period starts.")
     parser.add_argument("--monthly-contribution", type=float, default=10000,
                          help="Rupees added to cash at the start of each month, simulating real top-ups. Set to 0 to disable.")
+    parser.add_argument("--no-price-cap", action="store_true",
+                         help="Ignore config.MAX_PRICE when building the universe. The live bot's "
+                              "Rs1000 ceiling exists for affordability on a small account, not because "
+                              "expensive stocks are bad signals - without this flag, testing 'nifty50' "
+                              "silently shrinks to whichever third of it happens to be cheap.")
     args = parser.parse_args()
 
     from kite_auth import get_kite
@@ -175,8 +223,10 @@ if __name__ == "__main__":
 
     kite = get_kite()
     fetcher = DataFetcher(kite)
-    universe = build_universe(fetcher, universe_choice=args.universe)
-    print(f"Universe ({args.universe}): {len(universe)} symbols after liquidity/price filters")
+    universe = build_universe(fetcher, universe_choice=args.universe,
+                               max_price=(None if not args.no_price_cap else float("inf")))
+    print(f"Universe ({args.universe}): {len(universe)} symbols after liquidity/price filters"
+          + (" (price cap disabled)" if args.no_price_cap else f" (price cap Rs{config.MAX_PRICE})"))
 
     months = int(args.years * 12)
     equity_df, trades_df = backtest(
